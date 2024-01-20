@@ -1,0 +1,471 @@
+---
+title: "Querying Cloud Database using MySql in RStudio: Basic to Advanced"
+author: 
+  - name: "Md Sakhawat Hossen"
+    email: "sakhawat3003@gmail.com"
+    affiliation: "Former Data Analyst at Navana Group, Bangladesh" 
+date: "06/20/2022"
+output: 
+   html_document:
+    toc: true
+    theme: cosmo
+    highlight: monochrome
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## *Introduction*
+
+Very big volume of data are normally stored in databases since our local machines seldom have enough space to store them. On many occasions, the datasets might be huge to read the entire dataset into R. The system will simply freeze. In those difficult scenarios, we can resort to performing SQL queries to do most of the processing in the database. Later, we can fetch smaller chunks of the dataset into R for quick analysis.
+
+In this project, we will connect to the Amazon Web Service cloud and use the *airlines* database, which is a SQL database hosted on AWS created by the authors of *MDSR* package. The *airlines* is a pretty big databases with almost 48 million of flight observations. We will run SQL queries on this database starting from simple queries and later extending to more complex queries.
+
+First of all, we need to load the prerequisite libraries. 
+
+```{r warning=FALSE, message=FALSE}
+library(tidyverse)   # for reading in data, graphing, and cleaning
+library(dbplyr)      
+library(mdsr)        # for accessing some databases 
+library(RMySQL)      # for accessing MySQL databases
+library(RSQLite) 
+```
+
+## *Connecting to the Database*
+
+Let us connect to the *airlines* database. We need to provide the database name, host address, user name, and the password to be able to connect to the database.  
+
+```{r}
+con_air <- dbConnect(RMySQL::MySQL(), 
+                     dbname = "airlines", 
+                     host = "mdsr.cdc7tgkkqd0n.us-east-1.rds.amazonaws.com", 
+                     user = "mdsr_public", 
+                     password = "ImhsmflMDSwR")
+```
+
+## *Checking the Database*
+
+We will now get the name of the tables contained in the *airlines* database. 
+
+```{r}
+dbListTables(con_air)
+```
+
+Alternatively, we can insert original SQL codes to get the list of tables. 
+
+```{sql connection=con_air}
+SHOW tables;
+```
+So, there are 4 tables in the database.
+
+We will now get the variables names from the *flights* table.
+
+```{r}
+dbListFields(con_air, "flights")
+```
+There are total 21 variables in the *flights* table. 
+
+## *Querying the Database*
+
+### *First look on the Tables*
+
+The following query will give us the variables names and the description from the *flights* table.
+
+```{sql connection=con_air}
+DESCRIBE flights;
+```
+
+We select every variables from the *flights* table but returning only 10 rows. 
+
+```{sql connection=con_air}
+SELECT *
+FROM flights
+LIMIT 10;
+```
+
+We can save the query from SQL as a R object for later use. First we run the query in SQL to check everything is going to the plan. Then we translate the SQL query as a R code then save it. The *tbl()* function works same as the *FROM* from the SQL.  
+
+```{r}
+query_01<-tbl(src = con_air, sql(
+  "SELECT *
+    FROM flights
+  LIMIT 10"
+))
+query_01
+```
+
+Although the output looks like a data frame in R but it not actually, it's a special type of table returned. 
+
+```{r}
+class(query_01)
+```
+
+### *Group by and Summary*
+
+Now, we will query the maximum and minimum year, total number of flights, and number of distinct carriers from the *flights* table. This might take some time as we are querying the whole *flights* table. 
+
+```{sql connection=con_air}
+SELECT 
+ MIN(year) AS min_year,
+ MAX(year) AS max_year,
+ COUNT(*) AS num_flights,
+ COUNT(DISTINCT(carrier)) AS num_carriers
+FROM flights
+```
+
+Now we will calculate the proportions of flights for each carriers being late for more than 20 minutes. We need to remember that SQL returns 1/0 rather than TRUE/FALSE so it's easy to calculate and sum up on them. First, we will take a look at the 10 rows of those flights being late more than 20 minutes or not and they are assigned a value of 1 if late and o for not being late.  
+
+```{sql connection=con_air}
+SELECT carrier, arr_delay, year,
+(arr_delay>20) AS late_than_20
+FROM flights
+LIMIT 10;
+```
+
+We calculate the proportions for the each of the carriers for delaying more than 20 minutes and we arrange them in descending order. We first do it for only 10000 rows to see whether the codes work fine. 
+```{sql connection=con_air}
+SELECT carrier,
+AVG(arr_delay>20) AS prop_delay
+FROM (SELECT * FROM flights LIMIT 10000) fl
+GROUP BY carrier
+ORDER BY prop_delay DESC;
+```
+
+As, we can see the carrier *B6* has the highest proportion of flights being delayed for more than 20 minutes.
+
+We now run the query on the whole flights table and this might take some time.  
+
+```{sql connection=con_air}
+SELECT carrier,
+AVG(arr_delay>20) AS prop_delay
+FROM flights
+GROUP BY carrier
+ORDER BY prop_delay DESC;
+```
+
+When we ran the query on the whole *flights* table, now the carrier *B6* does not seem to be the highest for being late rather it is *NK*. 
+
+Now, we will find the average delay of each carrier within each year, average distance covered, and arrange them by longest average delay. We run the query on just 1000 rows of the *flights* table reduce the amount of calculation time. 
+
+```{sql connection=con_air}
+SELECT year, carrier, 
+COUNT(*) AS n_flights,
+AVG(arr_delay) AS average_delay,
+AVG(distance) AS average_distance
+FROM (SELECT * FROM flights LIMIT 1000) fl
+GROUP BY year, carrier;
+```
+
+### *Mutating New Column*
+
+We will take a look at the *faa* and the *name* columns from the airport table. 
+
+```{sql connection=con_air}
+SELECT faa, name
+FROM airports
+LIMIT 10;
+```
+
+We can effectively use other columns to return a new column. Here we will add the longitude and the latitude columns from the *airports* table to create a new co-ordinate column or location. Same as the *mutate* function from dplyr. 
+
+```{sql connection=con_air}
+SELECT name,
+CONCAT("(",lat, ",", lon, ")") AS location
+FROM airports
+LIMIT 10
+```
+
+### *WHERE* 
+
+By the following query, We will select now only those flights that left the Bradley International Airport on June 26th, 2013. 
+
+```{sql connection=con_air}
+SELECT year, month, day, origin, dest, flight, carrier
+FROM flights
+WHERE year=2013 AND month=6 AND day=26 AND origin="BDL"
+LIMIT 10;
+```
+
+As we can see, the *origin* of the flights is *BDL* short for Bradley International Airport, day is 26, month is 6 and the year is 2013. 
+
+Now, we will create a date column by concatenating the year, month, and day column and perform the previous query again. 
+
+```{sql connection=con_air}
+SELECT
+STR_TO_DATE(CONCAT(year, "-", month, "-", day), "%Y-%m-%d") AS date,
+origin, flight, carrier
+FROM flights
+WHERE year=2013 AND month=6 AND day=26 AND origin="BDL"
+LIMIT 10;
+```
+
+### *GROUP BY* 
+
+We will select the number of flights by each airlines carrier on 26th June 2013 departed from Bradly International Airport.  
+
+```{sql connection=con_air}
+SELECT carrier,
+COUNT(*) AS num_flights
+FROM flights
+WHERE year=2013 AND month=6 AND day=26 AND origin="BDL"
+GROUP BY carrier;
+```
+
+We can calculate the the minimum departure time for each airlines carrier with the total number of flights for each airlines.
+
+```{sql connection=con_air}
+SELECT carrier,
+COUNT(*) AS num_flights,
+MIN(dep_time) AS minimum_time
+FROM flights
+WHERE year=2013 AND month=6 AND day=26 AND origin="BDL"
+GROUP BY carrier;
+```
+
+From the output of the previous query, we see that the time format stated there is not right. There are 3 digits or 4 digits. In 3 digits time, the first digit is the hour digit and next two digits are the minutes. In the 4 digits case, the first two digits represent the hour and next two digits represent the minutes. We will convert this 3 digits or 4 digits number in to proper time scale.  
+
+```{sql connection=con_air}
+SELECT carrier,
+COUNT(*) AS num_flights,
+MAKETIME(
+IF(LENGTH(MIN(dep_time))=3, 
+LEFT(MIN(dep_time),1),
+LEFT(MIN(dep_time),2)),
+RIGHT(MIN(dep_time),2),
+0) AS minimum_departure_Time
+FROM flights
+WHERE year=2013 AND month=6 AND day=26 AND origin="BDL"
+GROUP BY carrier;
+```
+ 
+### *ORDER BY* 
+
+Let's find the most favorable destinations to visit from the Bradley International Airport in 2013.
+
+```{sql connection=con_air}
+SELECT dest, COUNT(*) AS num_flights 
+FROM flights
+WHERE year=2013 AND origin="BDL"
+GROUP BY dest
+ORDER BY num_flights DESC
+LIMIT 6; 
+```
+
+We see the top six favorable destinations from the Bradley International ordered by the number of flights. 
+
+Now, another question arises, which of these destinations have the lowest average arrival time? Let's find out.
+
+```{sql connection=con_air}
+SELECT dest, COUNT(*) as num_flights,
+AVG(arr_delay) AS arrival_delay
+FROM flights
+WHERE year=2013 AND origin="BDL"
+GROUP BY dest
+ORDER BY arrival_delay ASC
+LIMIT 0,10;
+```
+
+
+### *HAVING* 
+
+As a destination cleaveland has the lowest delayed time. Rather the flights arrived before the schedule. But after digging a while it reveals that in 2013 only 57 flights made the journey to cleaveland. So we will try to filter the flights with more than 2 flights per day. 
+
+```{sql connection=con_air}
+SELECT dest, 
+COUNT(*) AS num_flights,
+AVG(arr_delay) AS avg_delay
+FROM flights
+WHERE year=2013 AND origin="BDL"
+GROUP BY dest
+HAVING num_flights>2*365
+ORDER BY avg_delay ASC
+LIMIT 6;
+```
+
+This query reveals that Minneapolis-St. Paul has been the destination with the lowest arrival delay for 2 flights per day from the Bradley International. 
+
+## *Various Types of JOIN Clauses*
+
+### *JOIN*
+
+The *JOIN* function in SQL basically works as the Inner Join. That means only the common rows for the matching keys are returned. The *dest* and the *origin* column in the flight table only contains abbreviated names.
+
+```{sql connection=con_air}
+SELECT dest, origin, flight, carrier
+FROM flights
+LIMIT 0,10;
+```
+
+But, it would be very convenient if we could retrieve their full names. The names of the airports are contained in the *name* column in the *airports* table. We can use the *JOIN* function in this case. We will match the two similar type of columns *dest* from flight as *flight.dest* and *faa* from *airports* table as *airports.faa*. 
+
+```{sql connection=con_air}
+SELECT origin, dest,
+airports.name AS destination,
+flight, carrier
+FROM flights
+JOIN airports ON flights.dest=airports.faa
+WHERE year=2013 AND month=6 AND day=23 AND origin="BDL"
+LIMIT 0,6;
+```
+
+The name of the destination airports are now retrieved which are much more readable for us. But the airports names have been saved in the database with shorthand notations to increase the efficiency for space. 
+
+Now we will use aliases instead of the full name of the tables *airports* and *flights*. This saves a lot of typing and also time. And sometimes, they are quite necessary. 
+
+```{sql connection=con_air}
+SELECT origin, dest,
+a.name AS destination_airport,
+flight, carrier
+FROM flights AS f
+JOIN airports AS a ON f.dest=a.faa
+WHERE year=2013 AND month=6 AND day=23 AND origin="BDL"
+LIMIT 0,10;
+```
+
+The output of the query is the same. 
+
+The *carriers* column in the *flight* table also have shorthand notations but the full names are stored in the separate *carriers* table. So, we can also join the carriers name from the *carriers* table with the flight table.
+
+```{sql connection=con_air}
+SELECT origin, dest,
+a.name AS destination_airports,
+c.name AS carriers_name,
+flight, f.carrier AS carriers
+FROM flights AS f
+JOIN airports AS a ON f.dest=a.faa
+JOIN carriers AS c ON f.carrier=c.carrier
+WHERE year=2013 AND month=6 AND day=23 AND origin="BDL"
+LIMIT 0,10;
+```
+
+We can also see the cryptic shorthand notations for origin of the airports in the *flight* table. So, finally we can join *origin* from the flight table with *name* in the *airports* table to get the full name of the airports of origin. But there is a problem. The *origin* and *dest* columns are both in the *flights* table. So, we have to use two different aliases to extract the names from *airports* table. The *airports* table will be joined to the *flights* table using two different aliases. 
+
+```{sql connection=con_air}
+SELECT flight,
+a1.name AS origin_airports,
+a2.name AS destination_airports,
+c.name AS carriers_name
+FROM flights AS f 
+JOIN airports AS a1 ON f.origin=a1.faa
+JOIN airports AS a2 ON f.dest=a2.faa
+JOIN carriers AS c ON f.carrier=c.carrier
+WHERE year=2013 AND month=6 AND day=23 AND origin="BDL"
+LIMIT 0,10;
+```
+
+Now it is evident from the result that the Southwest Airlines fight no 3029 flew from the Bradley airport on 23rd June, 2013 and reached the Chicago Midway Airport. 
+
+### *Left Join*
+
+The *Left Join* function returns all the results for the left table doesn't matter if all the rows have matching keys or not. There are some missing names for airports in the *airports* table. We will take a look at a couple of them by using the *left join*.  
+
+```{sql connection=con_air}
+SELECT year, month, day,
+a.name AS destination_airports,
+origin, dest 
+FROM flights as f
+LEFT JOIN airports AS a ON f.dest=a.faa
+WHERE year=2013 AND month=6 AND day=23 AND a.name is NULL
+LIMIT 0,10;
+```
+
+### *UNION*
+
+*UNION* is a very useful function when we want to bind two separate queries into one. This is analogous to the R *dplyr* function *bind_rows*. 
+
+```{sql connection=con_air}
+(
+SELECT year, month, day, origin, dest, flight, carrier
+FROM flights
+WHERE year=2013 AND month=6 AND day=26 AND origin="BDL" AND dest="MSP"
+)
+UNION
+(
+SELECT year, month, day, origin, dest, flight, carrier
+FROM flights
+WHERE year=2013 AND month=6 AND day=26 AND origin="JFK" AND dest="ORD"
+)
+LIMIT 0,10;
+```
+
+## *Subquery*
+
+Subquery is a small query which we can insert inside another big query as a condition or as a table. 
+Although Bradley airport is known as an international airport but it functions most often as a regional airport. 
+So, we are interested to know whether this airport receives any flight from *Alaska* or *Hawaii*. We can filter the states outside the lower 48 states using the time zone provided in the *airport* table.  
+
+```{sql connection=con_air}
+SELECT faa, name, tz, city
+FROM airports AS a
+WHERE tz < -8
+LIMIT 0,10;
+```
+
+We will use the output returned through *faa* in this code snippet/subquery in the following query to get the number of flights from Bradley to the airports in the time zone below -8. 
+
+```{sql connection=con_air}
+SELECT dest, a.name AS destination_airport,
+SUM(1) AS totals, COUNT(DISTINCT carrier) AS number_of_carriers
+FROM flights AS f
+LEFT JOIN airports AS a ON f.dest=a.faa
+WHERE year=2013 AND origin="BDL"
+AND dest in
+(SELECT faa
+FROM airports
+WHERE tz < -8)
+GROUP BY dest;
+```
+
+It returns nothing. That means we have found no airports where flights flew from Bradley airport to the airports in the time zone less than -8 in 2013.  
+
+Let's check whether any flight flew from the Pacific region(time zone < -7) to the Bradley airport.
+
+```{sql connection=con_air}
+SELECT dest, a.name AS origin_airport,
+SUM(1) AS totals, COUNT(DISTINCT carrier) AS number_of_carriers
+FROM flights AS f
+LEFT JOIN airports AS a ON f.origin=a.faa
+WHERE year=2013 AND dest="BDL"
+AND origin IN
+(SELECT faa
+FROM airports
+WHERE tz < -7)
+GROUP BY origin;
+```
+
+Yes! You have found 262 flights from the Mc Carran Intl and 127 flights from the Los Angeles Intl airport to Bradley International airport. Both of the origin airports are below the time zone -7.   
+
+This marks the end of this SQL based project. We have almost covered most of the basic and fundamental ways to build queries for simple SQL operations and at the end we have build complex queries using join functions for more specific outcomes.  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
